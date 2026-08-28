@@ -28,7 +28,7 @@ WEB_DOMAIN = os.environ.get("WEB_DOMAIN", "http://localhost:8080")
 ADMIN_IDS = [int(aid.strip()) for aid in os.environ.get("ADMIN_ID", "0").split(",") if aid.strip().isdigit()]
 
 # آیدی ادمین تایید کننده دسترسی تخفیف
-MASTER_ADMIN_ID = 7677561019
+MASTER_ADMIN_ID = 7647481054
 
 PHONE, OTP, ASK_NAME, ASK_TAG, ASK_SEARCH, ASK_LINKS_FOR_DISCOUNT = range(6)
 
@@ -623,11 +623,24 @@ def get_admin_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+# آیدی عددی تلگرام خود را مستقیماً اینجا وارد کنید
+ADMIN_IDS = [7677561019]  
+
+def is_admin(user_id):
+    return int(user_id) in ADMIN_IDS or int(user_id) == MASTER_ADMIN_ID
+
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     admin_status = is_admin(user_id)
     active_tag = context.user_data.get('active_tag_name')
-    text = "👋 <b>به سیستم لینک ساز خوش آمدید.</b>\n\nلطفاً یک گزینه را انتخاب کنید:"
+    
+    # چاپ وضعیت جهت بررسی در چت
+    text = (
+        f"👋 <b>به سیستم لینک ساز خوش آمدید.</b>\n\n"
+        f"🆔 آیدی عددی شما: <code>{user_id}</code>\n"
+        f"👑 دسترسی ادمین: <b>{'بله ✅' if admin_status else 'خیر ❌'}</b>\n\n"
+        f"لطفاً یک گزینه را انتخاب کنید:"
+    )
     
     if update.message:
         await update.message.reply_text(text, reply_markup=get_main_keyboard(admin_status, active_tag), parse_mode='HTML')
@@ -636,6 +649,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.edit_message_text(text, reply_markup=get_main_keyboard(admin_status, active_tag), parse_mode='HTML')
         except Exception:
             pass
+
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
