@@ -33,7 +33,7 @@ MASTER_ADMIN_ID = 7647481054
 PHONE, OTP, ASK_NAME, ASK_TAG, ASK_SEARCH, ASK_LINKS_FOR_DISCOUNT = range(6)
 
 # محدود کردن Worker ها
-executor = ThreadPoolExecutor(max_workers=5)
+executor = ThreadPoolExecutor(max_workers=20)
 
 # لیست User-Agent های واقعی موبایل
 USER_AGENTS = [
