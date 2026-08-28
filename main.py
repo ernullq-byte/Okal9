@@ -28,7 +28,7 @@ WEB_DOMAIN = os.environ.get("WEB_DOMAIN", "http://localhost:8080")
 ADMIN_IDS = [int(aid.strip()) for aid in os.environ.get("ADMIN_ID", "0").split(",") if aid.strip().isdigit()]
 
 # آیدی ادمین تایید کننده دسترسی تخفیف
-MASTER_ADMIN_ID = 7647481054
+MASTER_ADMIN_ID = 7677561019
 
 PHONE, OTP, ASK_NAME, ASK_TAG, ASK_SEARCH, ASK_LINKS_FOR_DISCOUNT = range(6)
 
