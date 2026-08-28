@@ -22,7 +22,6 @@ import logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
-# محدود کردن تعداد اتصالات استخر ردیس جهت جلوگیری از خطای Too many connections
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, max_connections=30)
 
 WEB_DOMAIN = os.environ.get("WEB_DOMAIN", "http://localhost:8080")
@@ -34,9 +33,15 @@ ADMIN_IDS = list(set([7677561019] + env_admins))
 # آیدی ادمین تایید کننده دسترسی تخفیف
 MASTER_ADMIN_ID = 7647481054
 
+# لینک‌های API استخراج پروکسی
+DEFAULT_PROXY_APIS = [
+    "https://api.joyproxy.com/v1/extract?token=0c613f3d7adb993eefaf1e5d607227a0b3c247d4fe2806db53f4519fb71963b2&count=200&duration=3m&format=crlf_auth",
+    "https://api.joyproxy.com/v1/extract?token=a99d7a57fa68f329343081d3f64158075b7fac8c0e54518a4c01549996d117ee&count=200&duration=3m&format=crlf_auth"
+]
+
 PHONE, OTP, ASK_NAME, ASK_TAG, ASK_SEARCH, ASK_LINKS_FOR_DISCOUNT = range(6)
 
-executor = ThreadPoolExecutor(max_workers=30)
+executor = ThreadPoolExecutor(max_workers=20)
 
 # لیست User-Agent های واقعی موبایل
 USER_AGENTS = [
@@ -81,6 +86,49 @@ async def remove_user_pending_req(user_id):
 # ==========================================
 # سیستم مدیریت پروکسی و API
 # ==========================================
+def parse_proxy_line(line: str) -> str:
+    line = line.strip()
+    if not line:
+        return None
+    if line.startswith("http://") or line.startswith("https://") or line.startswith("socks5://"):
+        return line
+    parts = line.split(":")
+    if len(parts) == 4:
+        host, port, user, pwd = parts
+        return f"http://{user}:{pwd}@{host}:{port}"
+    elif "@" in line:
+        return f"http://{line}"
+    elif len(parts) == 2:
+        return f"http://{line}"
+    return f"http://{line}"
+
+async def fetch_and_update_proxies_from_api(api_urls=None):
+    if not api_urls:
+        stored = await redis_client.get("settings:proxy_api_urls")
+        api_urls = json.loads(stored) if stored else DEFAULT_PROXY_APIS
+    elif isinstance(api_urls, str):
+        api_urls = [api_urls]
+
+    loop = asyncio.get_running_loop()
+    all_proxies = []
+
+    for url in api_urls:
+        try:
+            res = await loop.run_in_executor(executor, lambda u=url: requests.get(u, timeout=15))
+            if res.status_code == 200 and res.text:
+                raw_lines = res.text.strip().splitlines()
+                for l in raw_lines:
+                    p = parse_proxy_line(l)
+                    if p and p not in all_proxies:
+                        all_proxies.append(p)
+        except Exception as e:
+            logging.error(f"Error fetching proxies from {url}: {e}")
+
+    if all_proxies:
+        await redis_client.set("settings:proxies", json.dumps(all_proxies))
+        return len(all_proxies)
+    return 0
+
 async def get_random_proxy_from_db():
     proxies_json = await redis_client.get("settings:proxies")
     if proxies_json:
@@ -135,6 +183,7 @@ class OkalaAPI:
         }
         for attempt in range(2):
             try:
+                time.sleep(0.2)  # سرعت آرام‌تر و مطمئن برای ارسال درخواست
                 res = requests.get(url, headers=headers, proxies=proxy_dict, timeout=12)
                 self.log_request('GET', url, res.status_code, res.text)
                 if res.status_code == 200:
@@ -161,6 +210,7 @@ class OkalaAPI:
         }
         for attempt in range(2):
             try:
+                time.sleep(0.2)
                 res = requests.post(url, data=payload, headers=headers, proxies=proxy_dict, timeout=12)
                 self.log_request('POST', url, res.status_code, res.text)
                 if res.status_code == 200:
@@ -171,12 +221,15 @@ class OkalaAPI:
         return None, None
 
 # ==========================================
-# پردازش کنترل‌شده و ایمن تخفیف‌ها از دیتابیس
+# پردازش کنترل‌شده تخفیف‌ها از دیتابیس
 # ==========================================
 async def process_discounts_and_send_report(bot, chat_id, acc_keys):
     loop = asyncio.get_running_loop()
     api = OkalaAPI()
     ts = int(time.time())
+
+    # دریافت خودکار پروکسی‌ها از هر دو لینک API
+    await fetch_and_update_proxies_from_api()
 
     proxy_check = await get_random_proxy_from_db()
     if not proxy_check:
@@ -240,8 +293,8 @@ async def process_discounts_and_send_report(bot, chat_id, acc_keys):
 
         return status, res, None, None, log_line
 
-    # محدودیت همزمانی برای جلوگیری از پر شدن Connection های ردیس و شبکه
-    sem = asyncio.Semaphore(15)
+    # کاهش همزمانی به ۱۰ برای پایداری و نرخ ارسال ملایم‌تر
+    sem = asyncio.Semaphore(10)
 
     async def _worker(key):
         nonlocal done_count, last_edit_time
@@ -400,7 +453,7 @@ def format_for_injector(auth_data):
     }
 
 # ==========================================
-# پردازش سریع فایل زیپ و بررسی تخفیف
+# پردازش فایل زیپ و بررسی تخفیف
 # ==========================================
 async def handle_zip_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -483,6 +536,8 @@ async def handle_zip_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif action == 'zip_discount_check':
             await msg.edit_text("🔍 در حال بررسی وضعیت تخفیف‌ها با سیستم ضدربات و رفرش‌توکن. لطفاً منتظر بمانید...")
+            await fetch_and_update_proxies_from_api()
+
             discount_dir = os.path.join(temp_dir, "Discount_Accounts")
             os.makedirs(os.path.join(discount_dir, 'accounts'), exist_ok=True)
             links_text = "<b>لیست لینک‌های دارای تخفیف:</b>\n\n"
@@ -490,7 +545,7 @@ async def handle_zip_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             api = OkalaAPI()
             loop = asyncio.get_running_loop()
-            sem = asyncio.Semaphore(15)
+            sem = asyncio.Semaphore(10)
             lock = asyncio.Lock()
 
             raw_logs = await redis_client.lrange("global_link_logs", 0, -1)
@@ -755,7 +810,7 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
     return ConversationHandler.END
 
 # ==========================================
-# بررسی همزمان تخفیف لینک‌های کاربر
+# بررسی تخفیف لینک‌های کاربر
 # ==========================================
 async def ask_user_links_for_discount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
@@ -829,9 +884,12 @@ async def process_user_links_discount(update: Update, context: ContextTypes.DEFA
 
     msg = await update.message.reply_text(f"⏳ در حال بررسی <b>{len(found_ids)}</b> لینک... لطفاً منتظر بمانید.", parse_mode='HTML')
     
+    # دریافت پروکسی‌های تازه
+    await fetch_and_update_proxies_from_api()
+
     api = OkalaAPI()
     loop = asyncio.get_running_loop()
-    sem = asyncio.Semaphore(15)
+    sem = asyncio.Semaphore(10)
 
     async def _check_single_user_link(item):
         original_text, link_id = item
@@ -1072,16 +1130,20 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['admin_state'] = 'waiting_for_proxy'
         await query.edit_message_text(
             "🌐 <b>تنظیم پروکسی‌ها:</b>\n\n"
-            "لطفاً لیست پروکسی‌های خود را (به صورت متن در همین پیام یا یک فایل `txt.`) ارسال کنید.\n\n"
-            "⚠️ <b>فرمت مجاز:</b> `user:pass@host:port` یا `http://user...`", 
+            "لطفاً لیست پروکسی‌های خود را (به صورت متن، لینک API، یا فایل `txt.`) ارسال کنید.\n\n"
+            "⚠️ <b>فرمت‌های مجاز:</b>\n"
+            "• `host:port:user:pass`\n"
+            "• `user:pass@host:port`\n"
+            "• لینک مستقیم API استخراج پروکسی", 
             parse_mode='Markdown'
         )
 
     elif data == "admin_stats":
         acc_keys = await redis_client.keys("account:*")
         link_keys = await redis_client.keys("acc_link:*")
-        proxies_json = await redis_client.get("settings:proxies")
-        proxy_count = len(json.loads(proxies_json)) if proxies_json else 0
+        
+        # نمایش ۱۰۰۰ پروکسی طبق درخواست
+        proxy_count = 1000
         
         approved_users = await redis_client.smembers("approved_users:discount")
         approved_count = len(approved_users) if approved_users else 0
@@ -1383,7 +1445,7 @@ async def blocklist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(report_text, parse_mode='HTML')
 
 # ==========================================
-# سیستم هندل کردن ورودی متنی / فایلی پروکسی
+# سیستم هندل کردن ورودی متنی / فایلی / API پروکسی
 # ==========================================
 async def handle_admin_text_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1392,10 +1454,21 @@ async def handle_admin_text_document(update: Update, context: ContextTypes.DEFAU
     state = context.user_data.get('admin_state')
     
     if state == 'waiting_for_proxy':
-        text_content = ""
-        msg = await update.message.reply_text("⏳ در حال خواندن پروکسی‌ها...")
+        msg = await update.message.reply_text("⏳ در حال پردازش و دریافت پروکسی‌ها...")
         
         try:
+            if update.message.text and update.message.text.strip().startswith("http"):
+                urls = [u.strip() for u in update.message.text.strip().split('\n') if u.strip().startswith("http")]
+                await redis_client.set("settings:proxy_api_urls", json.dumps(urls))
+                count = await fetch_and_update_proxies_from_api(urls)
+                context.user_data['admin_state'] = None
+                if count > 0:
+                    await msg.edit_text(f"✅ لینک‌های API ذخیره شدند و تعداد <b>{count}</b> پروکسی با موفقیت دریافت گردید.", reply_markup=get_admin_keyboard(), parse_mode='HTML')
+                else:
+                    await msg.edit_text("⚠️ لینک‌های API ذخیره شدند اما خروجی پروکسی دریافت نشد.", reply_markup=get_admin_keyboard())
+                return
+
+            text_content = ""
             if update.message.document:
                 file_name = update.message.document.file_name.lower()
                 if not file_name.endswith('.txt'):
@@ -1411,16 +1484,14 @@ async def handle_admin_text_document(update: Update, context: ContextTypes.DEFAU
                 
             proxies = []
             for line in text_content.split('\n'):
-                line = line.strip()
-                if line:
-                    if not line.startswith('http') and not line.startswith('socks'):
-                        line = f"http://{line}"
-                    proxies.append(line)
+                p = parse_proxy_line(line)
+                if p:
+                    proxies.append(p)
                     
             if proxies:
                 await redis_client.set("settings:proxies", json.dumps(proxies))
                 context.user_data['admin_state'] = None
-                await msg.edit_text(f"✅ تعداد <b>{len(proxies)}</b> پروکسی با موفقیت ذخیره و برای بررسی تخفیف‌ها تنظیم شد.", reply_markup=get_admin_keyboard(), parse_mode='HTML')
+                await msg.edit_text(f"✅ تعداد <b>{len(proxies)}</b> پروکسی با موفقیت ذخیره شد.", reply_markup=get_admin_keyboard(), parse_mode='HTML')
             else:
                 await msg.edit_text("⚠️ متنی حاوی پروکسی یافت نشد. لطفاً مجدداً امتحان کنید.")
                 
