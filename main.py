@@ -22,7 +22,7 @@ import logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
-redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, max_connections=30)
+redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, max_connections=40)
 
 WEB_DOMAIN = os.environ.get("WEB_DOMAIN", "http://localhost:8080")
 
@@ -33,15 +33,12 @@ ADMIN_IDS = list(set([7677561019] + env_admins))
 # آیدی ادمین تایید کننده دسترسی تخفیف
 MASTER_ADMIN_ID = 7647481054
 
-# لینک‌های API استخراج پروکسی
-DEFAULT_PROXY_APIS = [
-    "https://api.joyproxy.com/v1/extract?token=0c613f3d7adb993eefaf1e5d607227a0b3c247d4fe2806db53f4519fb71963b2&count=200&duration=3m&format=crlf_auth",
-    "https://api.joyproxy.com/v1/extract?token=a99d7a57fa68f329343081d3f64158075b7fac8c0e54518a4c01549996d117ee&count=200&duration=3m&format=crlf_auth"
-]
+# لینک دریافت پروکسی
+DEFAULT_PROXY_API = "https://erlink.s3.ir-thr-at1.arvanstorage.ir/%DB%B6%20%288%29.txt"
 
 PHONE, OTP, ASK_NAME, ASK_TAG, ASK_SEARCH, ASK_LINKS_FOR_DISCOUNT = range(6)
 
-executor = ThreadPoolExecutor(max_workers=20)
+executor = ThreadPoolExecutor(max_workers=30)
 
 # لیست User-Agent های واقعی موبایل
 USER_AGENTS = [
@@ -87,6 +84,7 @@ async def remove_user_pending_req(user_id):
 # سیستم مدیریت پروکسی و API
 # ==========================================
 def parse_proxy_line(line: str) -> str:
+    """پارس استاندارد فرمت User:pass@ip:port و سایر فرمت‌ها"""
     line = line.strip()
     if not line:
         return None
@@ -102,31 +100,24 @@ def parse_proxy_line(line: str) -> str:
         return f"http://{line}"
     return f"http://{line}"
 
-async def fetch_and_update_proxies_from_api(api_urls=None):
-    if not api_urls:
-        stored = await redis_client.get("settings:proxy_api_urls")
-        api_urls = json.loads(stored) if stored else DEFAULT_PROXY_APIS
-    elif isinstance(api_urls, str):
-        api_urls = [api_urls]
-
-    loop = asyncio.get_running_loop()
-    all_proxies = []
-
-    for url in api_urls:
-        try:
-            res = await loop.run_in_executor(executor, lambda u=url: requests.get(u, timeout=15))
-            if res.status_code == 200 and res.text:
-                raw_lines = res.text.strip().splitlines()
-                for l in raw_lines:
-                    p = parse_proxy_line(l)
-                    if p and p not in all_proxies:
-                        all_proxies.append(p)
-        except Exception as e:
-            logging.error(f"Error fetching proxies from {url}: {e}")
-
-    if all_proxies:
-        await redis_client.set("settings:proxies", json.dumps(all_proxies))
-        return len(all_proxies)
+async def fetch_and_update_proxies_from_api(api_url=None):
+    if not api_url:
+        api_url = await redis_client.get("settings:proxy_api_url") or DEFAULT_PROXY_API
+    try:
+        loop = asyncio.get_running_loop()
+        res = await loop.run_in_executor(executor, lambda: requests.get(api_url, timeout=12))
+        if res.status_code == 200 and res.text:
+            raw_lines = res.text.strip().splitlines()
+            proxies = []
+            for l in raw_lines:
+                p = parse_proxy_line(l)
+                if p and p not in proxies:
+                    proxies.append(p)
+            if proxies:
+                await redis_client.set("settings:proxies", json.dumps(proxies))
+                return len(proxies)
+    except Exception as e:
+        logging.error(f"Error fetching proxies from {api_url}: {e}")
     return 0
 
 async def get_random_proxy_from_db():
@@ -183,7 +174,7 @@ class OkalaAPI:
         }
         for attempt in range(2):
             try:
-                time.sleep(0.2)  # سرعت آرام‌تر و مطمئن برای ارسال درخواست
+                time.sleep(0.05)
                 res = requests.get(url, headers=headers, proxies=proxy_dict, timeout=12)
                 self.log_request('GET', url, res.status_code, res.text)
                 if res.status_code == 200:
@@ -210,7 +201,7 @@ class OkalaAPI:
         }
         for attempt in range(2):
             try:
-                time.sleep(0.2)
+                time.sleep(0.05)
                 res = requests.post(url, data=payload, headers=headers, proxies=proxy_dict, timeout=12)
                 self.log_request('POST', url, res.status_code, res.text)
                 if res.status_code == 200:
@@ -221,14 +212,14 @@ class OkalaAPI:
         return None, None
 
 # ==========================================
-# پردازش کنترل‌شده تخفیف‌ها از دیتابیس
+# پردازش سریع تخفیف‌ها از دیتابیس
 # ==========================================
 async def process_discounts_and_send_report(bot, chat_id, acc_keys):
     loop = asyncio.get_running_loop()
     api = OkalaAPI()
     ts = int(time.time())
 
-    # دریافت خودکار پروکسی‌ها از هر دو لینک API
+    # دریافت جدیدترین پروکسی‌ها از erfanlink.ir
     await fetch_and_update_proxies_from_api()
 
     proxy_check = await get_random_proxy_from_db()
@@ -293,8 +284,8 @@ async def process_discounts_and_send_report(bot, chat_id, acc_keys):
 
         return status, res, None, None, log_line
 
-    # کاهش همزمانی به ۱۰ برای پایداری و نرخ ارسال ملایم‌تر
-    sem = asyncio.Semaphore(10)
+    # تنظیم همزمانی روی ۱۸ جهت افزایش سرعت و ایمنی کانکشن‌ها
+    sem = asyncio.Semaphore(18)
 
     async def _worker(key):
         nonlocal done_count, last_edit_time
@@ -545,7 +536,7 @@ async def handle_zip_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             api = OkalaAPI()
             loop = asyncio.get_running_loop()
-            sem = asyncio.Semaphore(10)
+            sem = asyncio.Semaphore(18)
             lock = asyncio.Lock()
 
             raw_logs = await redis_client.lrange("global_link_logs", 0, -1)
@@ -884,12 +875,11 @@ async def process_user_links_discount(update: Update, context: ContextTypes.DEFA
 
     msg = await update.message.reply_text(f"⏳ در حال بررسی <b>{len(found_ids)}</b> لینک... لطفاً منتظر بمانید.", parse_mode='HTML')
     
-    # دریافت پروکسی‌های تازه
     await fetch_and_update_proxies_from_api()
 
     api = OkalaAPI()
     loop = asyncio.get_running_loop()
-    sem = asyncio.Semaphore(10)
+    sem = asyncio.Semaphore(18)
 
     async def _check_single_user_link(item):
         original_text, link_id = item
@@ -1132,9 +1122,9 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🌐 <b>تنظیم پروکسی‌ها:</b>\n\n"
             "لطفاً لیست پروکسی‌های خود را (به صورت متن، لینک API، یا فایل `txt.`) ارسال کنید.\n\n"
             "⚠️ <b>فرمت‌های مجاز:</b>\n"
-            "• `host:port:user:pass`\n"
-            "• `user:pass@host:port`\n"
-            "• لینک مستقیم API استخراج پروکسی", 
+            "• `User:pass@ip:port`\n"
+            "• `ip:port:user:pass`\n"
+            "• لینک مستقیم فایل یا API پروکسی", 
             parse_mode='Markdown'
         )
 
@@ -1142,7 +1132,6 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         acc_keys = await redis_client.keys("account:*")
         link_keys = await redis_client.keys("acc_link:*")
         
-        # نمایش ۱۰۰۰ پروکسی طبق درخواست
         proxy_count = 1000
         
         approved_users = await redis_client.smembers("approved_users:discount")
@@ -1458,14 +1447,14 @@ async def handle_admin_text_document(update: Update, context: ContextTypes.DEFAU
         
         try:
             if update.message.text and update.message.text.strip().startswith("http"):
-                urls = [u.strip() for u in update.message.text.strip().split('\n') if u.strip().startswith("http")]
-                await redis_client.set("settings:proxy_api_urls", json.dumps(urls))
-                count = await fetch_and_update_proxies_from_api(urls)
+                api_link = update.message.text.strip()
+                await redis_client.set("settings:proxy_api_url", api_link)
+                count = await fetch_and_update_proxies_from_api(api_link)
                 context.user_data['admin_state'] = None
                 if count > 0:
-                    await msg.edit_text(f"✅ لینک‌های API ذخیره شدند و تعداد <b>{count}</b> پروکسی با موفقیت دریافت گردید.", reply_markup=get_admin_keyboard(), parse_mode='HTML')
+                    await msg.edit_text(f"✅ لینک API ذخیره شد و تعداد <b>{count}</b> پروکسی با موفقیت دریافت گردید.", reply_markup=get_admin_keyboard(), parse_mode='HTML')
                 else:
-                    await msg.edit_text("⚠️ لینک‌های API ذخیره شدند اما خروجی پروکسی دریافت نشد.", reply_markup=get_admin_keyboard())
+                    await msg.edit_text("⚠️ لینک API ذخیره شد اما خروجی پروکسی دریافت نشد.", reply_markup=get_admin_keyboard())
                 return
 
             text_content = ""
