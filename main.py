@@ -681,6 +681,7 @@ def get_admin_keyboard():
         [InlineKeyboardButton("🌐 تنظیم پروکسی", callback_data="admin_set_proxy")],
         [InlineKeyboardButton("🚫 مدیریت دسترسی کاربران", callback_data="admin_manage_users")],
         [InlineKeyboardButton("🔄 اصلاح دامنه و تمدید ۱ ماهه", callback_data="admin_fix_extend")],
+        [InlineKeyboardButton("🔍 تحلیل منشأ اکانت‌ها", callback_data="admin_analyze_origins")],
         [InlineKeyboardButton("⏸ روشن/خاموش کردن", callback_data="admin_toggle")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="main_menu")]
     ]
@@ -1352,7 +1353,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if logs:
                 await redis_client.delete("global_link_logs")
                 for item in logs:
-                    updated_item = item.replace("okala.up.railway.app", "hyperlinks.bond")
+                    updated_item = re.sub(r'(?i)okala\.up\.railway\.app', 'hyperlinks.bond', item)
                     await redis_client.rpush("global_link_logs", updated_item)
                     count_logs += 1
             
@@ -1361,7 +1362,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for k in active_keys:
                 val = await redis_client.get(k)
                 if val:
-                    new_val = val.replace("okala.up.railway.app", "hyperlinks.bond")
+                    new_val = re.sub(r'(?i)okala\.up\.railway\.app', 'hyperlinks.bond', val)
                     await redis_client.setex(k, 2592000, new_val)
                     count_active += 1
             
@@ -1373,7 +1374,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             report = (
                 f"✅ <b>عملیات با موفقیت انجام شد!</b>\n\n"
-                f"📝 لاگ‌های اصلاح شده: <b>{count_logs}</b>\n"
+                f"📝 لاگ‌های بررسی و اصلاح شده: <b>{count_logs}</b>\n"
                 f"🔗 جلوگیری از تکرار اصلاح و تمدید شده: <b>{count_active}</b>\n"
                 f"⏳ لینک‌های اکانت تمدید شده (۱ ماهه): <b>{count_acc}</b>"
             )
@@ -1382,6 +1383,70 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.error(f"Error in fix_extend_links: {e}")
             await msg.edit_text(f"❌ خطایی در انجام عملیات رخ داد: {e}")
+
+    elif data == "admin_analyze_origins":
+        msg = await context.bot.send_message(chat_id=user_id, text="⏳ در حال تحلیل دیتابیس و بررسی منشأ اکانت‌ها...")
+        
+        try:
+            acc_keys = await redis_client.keys("account:*")
+            
+            # استخراج لاگ‌ها برای پیدا کردن اکانت‌های ساخته شده توسط بات
+            raw_logs = await redis_client.lrange("global_link_logs", 0, -1)
+            log_map = {}
+            for item in raw_logs:
+                try:
+                    entry = json.loads(item)
+                    log_map[entry['phone']] = entry.get('tg_name', 'نامشخص')
+                except: pass
+                
+            report_lines = []
+            zip_count = 0
+            user_count = 0
+            orphan_count = 0
+            
+            for key in acc_keys:
+                phone = key.replace("account:", "")
+                # بررسی وجود لینک فعال برای شماره
+                has_link = await redis_client.exists(f"phone_active_link:{phone}")
+                
+                if phone in log_map:
+                    # در دفترچه ثبت شده (توسط کاربر یا ادمین با پیامک)
+                    user_count += 1
+                elif has_link:
+                    # لینک دارد اما در دفترچه نیست (آپلود با زیپ یا فایل پشتیبان)
+                    report_lines.append(f"📱 {phone} ➔ 🗂 اضافه شده با فایل زیپ/پشتیبان")
+                    zip_count += 1
+                else:
+                    # اصلاً لینک ندارد
+                    report_lines.append(f"📱 {phone} ➔ ⚠️ فاقد لینک (منقضی شده یا ناقص)")
+                    orphan_count += 1
+                    
+            summary = (
+                f"📊 <b>گزارش وضعیت و منشأ اکانت‌های سیستم:</b>\n\n"
+                f"👥 <b>ثبت شده توسط ربات (پیامک):</b> {user_count} عدد\n"
+                f"🗂 <b>اضافه شده با فایل زیپ/پشتیبان:</b> {zip_count} عدد\n"
+                f"⚠️ <b>فاقد لینک (منقضی یا ناقص):</b> {orphan_count} عدد\n"
+                f"──────────────\n"
+                f"🔢 <b>کل اکانت‌های سیستم:</b> {len(acc_keys)} عدد"
+            )
+            
+            if report_lines:
+                file_text = "=== لیست اکانت‌های خارج از سیستم پیامکی ===\n\n" + "\n".join(report_lines)
+                file_out = io.BytesIO(file_text.encode('utf-8'))
+                await context.bot.send_document(
+                    chat_id=user_id, 
+                    document=file_out, 
+                    filename=f"Account_Origins_{int(time.time())}.txt", 
+                    caption=summary,
+                    parse_mode='HTML'
+                )
+                await msg.delete()
+            else:
+                await msg.edit_text(summary, parse_mode='HTML')
+                
+        except Exception as e:
+            logging.error(f"Error analyzing origins: {e}")
+            await msg.edit_text("❌ خطایی در انجام تحلیل رخ داد.")
 
 # ==========================================
 # دستورات تغییر وضعیت تایید کاربران برای چکر
