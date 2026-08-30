@@ -1,3 +1,4 @@
+
 import os
 import shutil
 import asyncio
@@ -682,6 +683,7 @@ def get_admin_keyboard():
         [InlineKeyboardButton("🚫 مدیریت دسترسی کاربران", callback_data="admin_manage_users")],
         [InlineKeyboardButton("🔄 اصلاح دامنه و تمدید ۱ ماهه", callback_data="admin_fix_extend")],
         [InlineKeyboardButton("🔍 تحلیل منشأ اکانت‌ها", callback_data="admin_analyze_origins")],
+        [InlineKeyboardButton("🔗 تولید لینک برای اکانت‌های ناقص", callback_data="admin_generate_missing_links")],
         [InlineKeyboardButton("⏸ روشن/خاموش کردن", callback_data="admin_toggle")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="main_menu")]
     ]
@@ -1448,6 +1450,71 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Error analyzing origins: {e}")
             await msg.edit_text("❌ خطایی در انجام تحلیل رخ داد.")
 
+        elif data == "admin_generate_missing_links":
+        msg = await context.bot.send_message(chat_id=user_id, text="⏳ در حال اسکن دیتابیس و تولید لینک برای اکانت‌های فاقد لینک...")
+        try:
+            acc_keys = await redis_client.keys("account:*")
+            expire_time = await redis_client.get("settings:expire_time")
+            expire_time = int(expire_time) if expire_time else 2592000
+            
+            generated_count = 0
+            links_text = "لیست لینک‌های جدید تولید شده برای اکانت‌های ناقص:\n\n"
+            
+            for key in acc_keys:
+                phone = key.replace("account:", "")
+                has_link = await redis_client.exists(f"phone_active_link:{phone}")
+                
+                if not has_link:
+                    tokens = await redis_client.hgetall(key)
+                    acc_token = tokens.get("access_token")
+                    ref_token = tokens.get("refresh_token", "")
+                    
+                    if acc_token:
+                        # اضافه شدن UserInfo برای تزریق شماره موبایل به داخل JSON لینک
+                        auth_data = {
+                            "access_token": acc_token, 
+                            "refresh_token": ref_token,
+                            "UserInfo": {"MobilePhone": phone}
+                        }
+                        injection_json = format_for_injector(auth_data)
+                        
+                        link_id = str(uuid.uuid4())[:12]
+                        final_url = f"{WEB_DOMAIN}/acc/{link_id}"
+                        
+                        await redis_client.setex(f"acc_link:{link_id}", expire_time, json.dumps(injection_json, ensure_ascii=False))
+                        await redis_client.setex(f"phone_active_link:{phone}", expire_time, final_url)
+                        
+                        log_entry = {
+                            "tg_id": user_id,
+                            "tg_name": "System Auto-Gen",
+                            "tg_user": "admin",
+                            "phone": phone,
+                            "link": final_url,
+                            "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                        }
+                        await redis_client.rpush("global_link_logs", json.dumps(log_entry, ensure_ascii=False))
+                        
+                        links_text += f"📱 شماره: {phone}\n🔗 لینک: {final_url}\n\n"
+                        generated_count += 1
+            
+            if generated_count > 0:
+                file_out = io.BytesIO(links_text.encode('utf-8'))
+                await context.bot.send_document(
+                    chat_id=user_id, 
+                    document=file_out, 
+                    filename=f"Generated_Missing_Links_{int(time.time())}.txt", 
+                    caption=f"✅ عملیات موفق!\nتعداد <b>{generated_count}</b> لینک جدید ساخته و در دفترچه ثبت شد.",
+                    parse_mode='HTML'
+                )
+                await msg.delete()
+            else:
+                await msg.edit_text("✅ تمام اکانت‌های دیتابیس لینک فعال دارند و نیازی به تولید لینک جدید نبود.")
+                
+        except Exception as e:
+            logging.error(f"Error generating missing links: {e}")
+            await msg.edit_text("❌ خطایی در تولید لینک‌ها رخ داد.")
+
+
 # ==========================================
 # دستورات تغییر وضعیت تایید کاربران برای چکر
 # ==========================================
@@ -1867,3 +1934,4 @@ if __name__ == '__main__':
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+
