@@ -219,7 +219,6 @@ async def process_discounts_and_send_report(bot, chat_id, acc_keys):
     api = OkalaAPI()
     ts = int(time.time())
 
-    # دریافت جدیدترین پروکسی‌ها از لینک مشخص‌شده
     await fetch_and_update_proxies_from_api()
 
     proxy_check = await get_random_proxy_from_db()
@@ -228,7 +227,7 @@ async def process_discounts_and_send_report(bot, chat_id, acc_keys):
             chat_id=chat_id,
             text="⚠️ <b>هیچ پروکسی‌ای در سیستم تنظیم نشده است!</b>\n"
                  "بررسی تخفیف بدون پروکسی ادامه می‌یابد — ممکن است نتایج نادرست باشد.\n"
-                 "برای تنظیم پروکسی از پنل ادمین اقدام کنید.",
+                 "برای تنظیم پروکسی از پنل مدیریت اقدام کنید.",
             parse_mode='HTML'
         )
 
@@ -244,7 +243,7 @@ async def process_discounts_and_send_report(bot, chat_id, acc_keys):
     total = len(acc_keys)
     progress_msg = await bot.send_message(
         chat_id=chat_id,
-        text=f"🔍 شروع بررسی <b>{total}</b> اکانت با پروکسی...\n⏳ لطفاً منتظر بمانید.",
+        text=f"🔍 شروع بررسی <b>{total}</b> حساب با پروکسی...\n⏳ لطفاً منتظر بمانید.",
         parse_mode='HTML'
     )
 
@@ -274,13 +273,13 @@ async def process_discounts_and_send_report(bot, chat_id, acc_keys):
             vouchers = res.get('data', [])
             amounts = [v.get('discountAmount', 0) for v in vouchers if v.get('discountAmount')]
             if vouchers:
-                log_line += f"  🎁 تخفیف یافت شد: {len(vouchers)} کد | بیشترین مبلغ: {max(amounts)//10000 if amounts else '?'} هزار تومان\n"
+                log_line += f"  🎁 تخفیف یافت شد: {len(vouchers)} مورد | بیشترین مبلغ: {max(amounts)//10000 if amounts else '?'} هزار تومان\n"
             else:
                 log_line += f"  ➖ بدون تخفیف (پاسخ 200)\n"
         elif status == 401:
-            log_line += f"  🔒 دسترسی کاملاً منقضی شده.\n"
+            log_line += f"  🔒 دسترسی کاملاً مسدود شده.\n"
         else:
-            log_line += f"  ❌ خطا — کد پاسخ: {status}\n"
+            log_line += f"  ❌ خطا — وضعیت: {status}\n"
 
         return status, res, None, None, log_line
 
@@ -338,7 +337,7 @@ async def process_discounts_and_send_report(bot, chat_id, acc_keys):
                         last_edit_time = current_time
                         try:
                             await progress_msg.edit_text(
-                                f"🔍 بررسی اکانت‌ها...\n"
+                                f"🔍 بررسی حساب‌ها...\n"
                                 f"✅ انجام شده: <b>{done_count}/{total}</b>\n"
                                 f"🎁 دارای تخفیف تاکنون: <b>{len(discount_results)}</b>",
                                 parse_mode='HTML'
@@ -354,17 +353,17 @@ async def process_discounts_and_send_report(bot, chat_id, acc_keys):
     await asyncio.gather(*[_worker(k) for k in acc_keys])
 
     if discount_results:
-        report_text = f"🎁 <b>گزارش بررسی تخفیف‌ها ({len(discount_results)} اکانت دارای تخفیف از {total}):</b>\n\n"
+        report_text = f"🎁 <b>گزارش بررسی تخفیف‌ها ({len(discount_results)} حساب دارای تخفیف از {total}):</b>\n\n"
         for r in discount_results:
             link_line = f"🔗 {r['link']}" if r['link'] else "⚠️ لینک ثبت‌شده‌ای در سیستم یافت نشد"
             report_text += (
                 f"📱 شماره: <code>{r['phone']}</code>\n"
-                f"🎟 تعداد کد تخفیف: <b>{r['count']}</b> | بیشترین مبلغ: <b>{r['max_amount']} هزار تومان</b>\n"
+                f"🎟 تعداد تخفیف: <b>{r['count']}</b> | بیشترین مبلغ: <b>{r['max_amount']} هزار تومان</b>\n"
                 f"{link_line}\n"
                 f"{'─'*30}\n"
             )
     else:
-        report_text = f"➖ <b>هیچ تخفیفی یافت نشد.</b>\nتعداد کل اکانت‌های بررسی‌شده: {total}"
+        report_text = f"➖ <b>هیچ تخفیفی یافت نشد.</b>\nتعداد کل حساب‌های بررسی‌شده: {total}"
 
     try:
         await progress_msg.delete()
@@ -376,11 +375,11 @@ async def process_discounts_and_send_report(bot, chat_id, acc_keys):
         await bot.send_document(
             chat_id=chat_id, document=report_out,
             filename=f"Discounts_Report_{ts}.txt",
-            caption=f"✅ فایل گزارش تخفیف‌ها — {len(discount_results)} اکانت دارای تخفیف"
+            caption=f"✅ فایل گزارش تخفیف‌ها — {len(discount_results)} حساب دارای تخفیف"
         )
         
         full_log = f"=== لاگ بررسی تخفیف | {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
-        full_log += f"کل اکانت‌ها: {total} | دارای تخفیف: {len(discount_results)}\n"
+        full_log += f"کل حساب‌ها: {total} | دارای تخفیف: {len(discount_results)}\n"
         full_log += "=" * 50 + "\n\n"
         full_log += "".join(detail_logs)
         full_log += "\n\n=== لاگ درخواست‌های سیستم ===\n"
@@ -390,7 +389,7 @@ async def process_discounts_and_send_report(bot, chat_id, acc_keys):
         await bot.send_document(
             chat_id=chat_id, document=log_out,
             filename=f"System_Logs_{ts}.txt",
-            caption=f"📄 گزارش ارتباط با سرور"
+            caption=f"📄 گزارش ارتباط با سیستم"
         )
     except Exception as e:
         logging.error(f"Error sending log files: {e}")
@@ -443,7 +442,7 @@ def format_for_injector(auth_data):
     }
 
 # ==========================================
-# پردازش فایل زیپ و بررسی تخفیف
+# پردازش فایل پشتیبان و بررسی تخفیف
 # ==========================================
 async def handle_zip_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -626,10 +625,10 @@ async def handle_zip_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             if debug_logs:
                 debug_out = io.BytesIO("".join(debug_logs).encode('utf-8'))
-                await context.bot.send_document(chat_id=user_id, document=debug_out, filename=f"System_Logs_{ts}.txt", caption="📄 گزارش ارتباط با سرور")
+                await context.bot.send_document(chat_id=user_id, document=debug_out, filename=f"System_Logs_{ts}.txt", caption="📄 گزارش ارتباط با سیستم")
 
 # ==========================================
-# مینی‌سرور وب
+# سرور وب
 # ==========================================
 async def web_handler_get_account(request):
     link_id = request.match_info.get('link_id', '')
@@ -682,7 +681,7 @@ def get_admin_keyboard():
         [InlineKeyboardButton("🚫 مدیریت دسترسی کاربران", callback_data="admin_manage_users")],
         [InlineKeyboardButton("🔄 اصلاح دامنه و تمدید ۱ ماهه", callback_data="admin_fix_extend")],
         [InlineKeyboardButton("🔍 تحلیل منشأ اکانت‌ها", callback_data="admin_analyze_origins")],
-        [InlineKeyboardButton("🔗 تولید لینک برای اکانت‌های ناقص", callback_data="admin_generate_missing_links")],
+        [InlineKeyboardButton("🔗 احیای لینک‌های ناقص", callback_data="admin_generate_missing_links")],
         [InlineKeyboardButton("⏸ روشن/خاموش کردن", callback_data="admin_toggle")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="main_menu")]
     ]
@@ -1377,7 +1376,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ <b>عملیات با موفقیت انجام شد!</b>\n\n"
                 f"📝 لاگ‌های بررسی و اصلاح شده: <b>{count_logs}</b>\n"
                 f"🔗 جلوگیری از تکرار اصلاح و تمدید شده: <b>{count_active}</b>\n"
-                f"⏳ لینک‌های اکانت تمدید شده (۱ ماهه): <b>{count_acc}</b>"
+                f"⏳ لینک‌های حساب تمدید شده (۱ ماهه): <b>{count_acc}</b>"
             )
             await msg.edit_text(report, parse_mode='HTML')
             
@@ -1386,12 +1385,11 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ خطایی در انجام عملیات رخ داد: {e}")
 
     elif data == "admin_analyze_origins":
-        msg = await context.bot.send_message(chat_id=user_id, text="⏳ در حال تحلیل سیستم و بررسی منشأ اکانت‌ها...")
+        msg = await context.bot.send_message(chat_id=user_id, text="⏳ در حال تحلیل سیستم و بررسی منشأ حساب‌ها...")
         
         try:
             acc_keys = await redis_client.keys("account:*")
             
-            # استخراج لاگ‌ها برای پیدا کردن اکانت‌های ساخته شده توسط بات
             raw_logs = await redis_client.lrange("global_link_logs", 0, -1)
             log_map = {}
             for item in raw_logs:
@@ -1407,32 +1405,28 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             for key in acc_keys:
                 phone = key.replace("account:", "")
-                # بررسی وجود لینک فعال برای شماره
                 has_link = await redis_client.exists(f"phone_active_link:{phone}")
                 
                 if phone in log_map:
-                    # در دفترچه ثبت شده (توسط کاربر یا ادمین با پیامک)
                     user_count += 1
                 elif has_link:
-                    # لینک دارد اما در دفترچه نیست (آپلود با زیپ یا فایل پشتیبان)
                     report_lines.append(f"📱 {phone} ➔ 🗂 اضافه شده با فایل / پشتیبان")
                     zip_count += 1
                 else:
-                    # اصلاً لینک ندارد
                     report_lines.append(f"📱 {phone} ➔ ⚠️ فاقد لینک (منقضی شده یا ناقص)")
                     orphan_count += 1
                     
             summary = (
-                f"📊 <b>گزارش وضعیت و منشأ اکانت‌های سیستم:</b>\n\n"
-                f"👥 <b>ثبت شده توسط ربات:</b> {user_count} عدد\n"
-                f"🗂 <b>اضافه شده با فایل / پشتیبان:</b> {zip_count} عدد\n"
-                f"⚠️ <b>فاقد لینک (منقضی یا ناقص):</b> {orphan_count} عدد\n"
+                f"📊 <b>گزارش وضعیت و منشأ حساب‌های سیستم:</b>\n\n"
+                f"👥 <b>ثبت شده توسط سیستم:</b> {user_count} مورد\n"
+                f"🗂 <b>اضافه شده با فایل / پشتیبان:</b> {zip_count} مورد\n"
+                f"⚠️ <b>فاقد لینک (منقضی یا ناقص):</b> {orphan_count} مورد\n"
                 f"──────────────\n"
-                f"🔢 <b>کل اکانت‌های سیستم:</b> {len(acc_keys)} عدد"
+                f"🔢 <b>کل حساب‌های سیستم:</b> {len(acc_keys)} مورد"
             )
             
             if report_lines:
-                file_text = "=== لیست اکانت‌های خارج از سیستم پیامکی ===\n\n" + "\n".join(report_lines)
+                file_text = "=== لیست حساب‌های خارج از روال اصلی ===\n\n" + "\n".join(report_lines)
                 file_out = io.BytesIO(file_text.encode('utf-8'))
                 await context.bot.send_document(
                     chat_id=user_id, 
@@ -1450,14 +1444,25 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ خطایی در انجام تحلیل رخ داد.")
 
     elif data == "admin_generate_missing_links":
-        msg = await context.bot.send_message(chat_id=user_id, text="⏳ در حال اسکن سیستم و تولید لینک برای اکانت‌های فاقد لینک...")
+        msg = await context.bot.send_message(chat_id=user_id, text="⏳ در حال اسکن سیستم و احیای لینک‌های قبلی مشتریان...")
         try:
             acc_keys = await redis_client.keys("account:*")
             expire_time = await redis_client.get("settings:expire_time")
             expire_time = int(expire_time) if expire_time else 2592000
             
+            raw_logs = await redis_client.lrange("global_link_logs", 0, -1)
+            phone_to_old_id = {}
+            for item in raw_logs:
+                try:
+                    entry = json.loads(item)
+                    link = entry.get('link', '')
+                    match = re.search(r'/acc/([a-zA-Z0-9_-]+)', link)
+                    if match and entry.get('tg_name') != "System Auto-Gen":
+                        phone_to_old_id[entry['phone']] = match.group(1)
+                except: pass
+            
             generated_count = 0
-            links_text = "لیست لینک‌های جدید تولید شده برای اکانت‌های ناقص:\n\n"
+            links_text = "لیست لینک‌های احیا شده:\n\n"
             
             for key in acc_keys:
                 phone = key.replace("account:", "")
@@ -1476,7 +1481,8 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                         injection_json = format_for_injector(auth_data)
                         
-                        link_id = str(uuid.uuid4())[:12]
+                        old_id = phone_to_old_id.get(phone)
+                        link_id = old_id if old_id else str(uuid.uuid4())[:12]
                         final_url = f"{WEB_DOMAIN}/acc/{link_id}"
                         
                         await redis_client.setex(f"acc_link:{link_id}", expire_time, json.dumps(injection_json, ensure_ascii=False))
@@ -1484,7 +1490,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         
                         log_entry = {
                             "tg_id": user_id,
-                            "tg_name": "System Auto-Gen",
+                            "tg_name": "System Revived" if old_id else "System Auto-Gen",
                             "tg_user": "admin",
                             "phone": phone,
                             "link": final_url,
@@ -1492,7 +1498,8 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                         await redis_client.rpush("global_link_logs", json.dumps(log_entry, ensure_ascii=False))
                         
-                        links_text += f"📱 شماره: {phone}\n🔗 لینک: {final_url}\n\n"
+                        status_str = "♻️ احیا شده (همان لینک قبلی)" if old_id else "🆕 لینک کاملاً جدید"
+                        links_text += f"📱 شماره: {phone}\n🔗 لینک: {final_url} ➔ {status_str}\n\n"
                         generated_count += 1
             
             if generated_count > 0:
@@ -1500,20 +1507,20 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=user_id, 
                     document=file_out, 
-                    filename=f"Generated_Missing_Links_{int(time.time())}.txt", 
-                    caption=f"✅ عملیات موفق!\nتعداد <b>{generated_count}</b> لینک جدید ساخته و در دفترچه ثبت شد.",
+                    filename=f"Revived_Links_{int(time.time())}.txt", 
+                    caption=f"✅ عملیات موفق!\nتعداد <b>{generated_count}</b> لینک با موفقیت بازیابی شدند.",
                     parse_mode='HTML'
                 )
                 await msg.delete()
             else:
-                await msg.edit_text("✅ تمام اکانت‌های پایگاه داده لینک فعال دارند و نیازی به تولید لینک جدید نبود.")
+                await msg.edit_text("✅ تمام حساب‌های پایگاه داده لینک فعال دارند.")
                 
         except Exception as e:
-            logging.error(f"Error generating missing links: {e}")
-            await msg.edit_text("❌ خطایی در تولید لینک‌ها رخ داد.")
+            logging.error(f"Error reviving links: {e}")
+            await msg.edit_text("❌ خطایی در بازسازی لینک‌ها رخ داد.")
 
 # ==========================================
-# دستورات تغییر وضعیت تایید کاربران برای چکر
+# دستورات تغییر وضعیت تایید کاربران
 # ==========================================
 async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -1533,19 +1540,19 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = context.args[0].strip()
     
     if target.startswith('@'):
-        await update.message.reply_text("⚠️ لطفاً از آیدی عددی استفاده کنید.")
+        await update.message.reply_text("⚠️ لطفاً از شناسه عددی استفاده کنید.")
         return
     
     if target.isdigit():
         target_user_id = int(target)
     else:
-        await update.message.reply_text("❌ فرمت نامعتبر است. لطفاً آیدی عددی را ارسال کنید.")
+        await update.message.reply_text("❌ فرمت نامعتبر است. لطفاً شناسه عددی را ارسال کنید.")
         return
     
     await redis_client.srem("approved_users:discount", str(target_user_id))
     
     await update.message.reply_text(
-        f"✅ کاربر <code>{target_user_id}</code> از دسترسی به بررسی تخفیف محروم شد.",
+        f"✅ کاربر <code>{target_user_id}</code> از دسترسی محروم شد.",
         parse_mode='HTML'
     )
 
@@ -1567,19 +1574,19 @@ async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = context.args[0].strip()
     
     if target.startswith('@'):
-        await update.message.reply_text("⚠️ لطفاً از آیدی عددی استفاده کنید.")
+        await update.message.reply_text("⚠️ لطفاً از شناسه عددی استفاده کنید.")
         return
     
     if target.isdigit():
         target_user_id = int(target)
     else:
-        await update.message.reply_text("❌ فرمت نامعتبر است. لطفاً آیدی عددی را ارسال کنید.")
+        await update.message.reply_text("❌ فرمت نامعتبر است. لطفاً شناسه عددی را ارسال کنید.")
         return
     
     await approve_user_for_discount(target_user_id)
     
     await update.message.reply_text(
-        f"✅ کاربر <code>{target_user_id}</code> دسترسی به چکر تخفیف را دریافت کرد.",
+        f"✅ کاربر <code>{target_user_id}</code> دسترسی را دریافت کرد.",
         parse_mode='HTML'
     )
 
@@ -1591,10 +1598,10 @@ async def blocklist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     approved_users = await redis_client.smembers("approved_users:discount")
     
     if not approved_users:
-        await update.message.reply_text("✅ هنوز هیچ کاربری برای بخش چکر تخفیف تایید نشده است.")
+        await update.message.reply_text("✅ هنوز هیچ کاربری تایید نشده است.")
         return
     
-    report_text = "✅ <b>لیست کاربرانی که به چکر تخفیف دسترسی دارند:</b>\n\n"
+    report_text = "✅ <b>لیست کاربرانی که دسترسی دارند:</b>\n\n"
     for uid in sorted(approved_users):
         report_text += f"• <code>{uid}</code>\n"
     
