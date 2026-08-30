@@ -33,8 +33,8 @@ ADMIN_IDS = list(set([7677561019] + env_admins))
 # آیدی ادمین تایید کننده دسترسی تخفیف
 MASTER_ADMIN_ID = 7647481054
 
-# لینک دریافت پروکسی
-DEFAULT_PROXY_API = "https://erlink.s3.ir-thr-at1.arvanstorage.ir/%DB%B6%20%288%29.txt"
+# لینک دریافت مستقیم پروکسی از استوریج
+DEFAULT_PROXY_API = "https://erlink.s3.ir-thr-at1.arvanstorage.ir/%DB%B6%20%288%29.txt?versionId="
 
 PHONE, OTP, ASK_NAME, ASK_TAG, ASK_SEARCH, ASK_LINKS_FOR_DISCOUNT = range(6)
 
@@ -219,7 +219,7 @@ async def process_discounts_and_send_report(bot, chat_id, acc_keys):
     api = OkalaAPI()
     ts = int(time.time())
 
-    # دریافت جدیدترین پروکسی‌ها از erfanlink.ir
+    # دریافت جدیدترین پروکسی‌ها از لینک مشخص‌شده
     await fetch_and_update_proxies_from_api()
 
     proxy_check = await get_random_proxy_from_db()
@@ -284,7 +284,6 @@ async def process_discounts_and_send_report(bot, chat_id, acc_keys):
 
         return status, res, None, None, log_line
 
-    # تنظیم همزمانی روی ۱۸ جهت افزایش سرعت و ایمنی کانکشن‌ها
     sem = asyncio.Semaphore(18)
 
     async def _worker(key):
@@ -681,6 +680,7 @@ def get_admin_keyboard():
         [InlineKeyboardButton("🛠 تعمیر لینک‌های ناقص (سریع)", callback_data="admin_repair_links")],
         [InlineKeyboardButton("🌐 تنظیم پروکسی", callback_data="admin_set_proxy")],
         [InlineKeyboardButton("🚫 مدیریت دسترسی کاربران", callback_data="admin_manage_users")],
+        [InlineKeyboardButton("🔄 اصلاح دامنه و تمدید ۱ ماهه", callback_data="admin_fix_extend")],
         [InlineKeyboardButton("⏸ روشن/خاموش کردن", callback_data="admin_toggle")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="main_menu")]
     ]
@@ -1342,6 +1342,46 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await redis_client.set("settings:maintenance", new_val)
         status = "غیرفعال (تعمیرات) 🔴" if new_val == "1" else "فعال 🟢"
         await query.edit_message_text(f"⚙️ <b>تغییر وضعیت سیستم:</b>\nوضعیت کنونی: {status}", reply_markup=get_admin_keyboard(), parse_mode='HTML')
+
+    elif data == "admin_fix_extend":
+        msg = await context.bot.send_message(chat_id=user_id, text="⏳ در حال اصلاح دامنه‌ها و تمدید لینک‌ها (این عملیات ممکن است کمی طول بکشد)...")
+        
+        try:
+            logs = await redis_client.lrange("global_link_logs", 0, -1)
+            count_logs = 0
+            if logs:
+                await redis_client.delete("global_link_logs")
+                for item in logs:
+                    updated_item = item.replace("okala.up.railway.app", "hyperlinks.bond")
+                    await redis_client.rpush("global_link_logs", updated_item)
+                    count_logs += 1
+            
+            active_keys = await redis_client.keys("phone_active_link:*")
+            count_active = 0
+            for k in active_keys:
+                val = await redis_client.get(k)
+                if val:
+                    new_val = val.replace("okala.up.railway.app", "hyperlinks.bond")
+                    await redis_client.setex(k, 2592000, new_val)
+                    count_active += 1
+            
+            acc_link_keys = await redis_client.keys("acc_link:*")
+            count_acc = 0
+            for k in acc_link_keys:
+                await redis_client.expire(k, 2592000)
+                count_acc += 1
+                
+            report = (
+                f"✅ <b>عملیات با موفقیت انجام شد!</b>\n\n"
+                f"📝 لاگ‌های اصلاح شده: <b>{count_logs}</b>\n"
+                f"🔗 جلوگیری از تکرار اصلاح و تمدید شده: <b>{count_active}</b>\n"
+                f"⏳ لینک‌های اکانت تمدید شده (۱ ماهه): <b>{count_acc}</b>"
+            )
+            await msg.edit_text(report, parse_mode='HTML')
+            
+        except Exception as e:
+            logging.error(f"Error in fix_extend_links: {e}")
+            await msg.edit_text(f"❌ خطایی در انجام عملیات رخ داد: {e}")
 
 # ==========================================
 # دستورات تغییر وضعیت تایید کاربران برای چکر
