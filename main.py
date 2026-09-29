@@ -26,11 +26,10 @@ redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, max_connec
 
 WEB_DOMAIN = os.environ.get("WEB_DOMAIN", "http://localhost:8080")
 
-# آیدی‌های ادمین (در این نسخه با تغییر تابع is_admin عملاً غیرقابل استفاده شده است زیرا همه ادمین هستند)
+# آیدی‌های ادمین
 env_admins = [int(aid.strip()) for aid in os.environ.get("ADMIN_ID", "").split(",") if aid.strip().isdigit()]
 ADMIN_IDS = list(set([7677561019] + env_admins))
 
-# آیدی ادمین تایید کننده دسترسی تخفیف
 MASTER_ADMIN_ID = 7647481054
 
 # لینک دریافت مستقیم پروکسی از استوریج
@@ -62,17 +61,15 @@ def get_anti_bot_headers():
     }
 
 def is_admin(user_id):
-    # تغییر یافته: اعطای دسترسی ادمین به همه کاربران
+    # دسترسی ادمین و پنل مدیریت برای همه کاربران فعال است
     return True
 
 # ==========================================
 # سیستم دسترسی کاربران برای دکمه بررسی تخفیف
 # ==========================================
 async def is_user_approved_for_discount(user_id):
-    if is_admin(user_id):
-        return True
-    approved = await redis_client.sismember("approved_users:discount", str(user_id))
-    return bool(approved)
+    # دسترسی آزاد برای تمامی افراد بدون نیاز به تایید
+    return True
 
 async def approve_user_for_discount(user_id):
     await redis_client.sadd("approved_users:discount", str(user_id))
@@ -157,11 +154,9 @@ class OkalaAPI:
         self.request_logs.append(f"[{timestamp}] {method} {url}\nStatus: {status_code}\nResponse: {response_text}\n{'-'*50}\n")
 
     def check_discount_api(self, token, uid, proxy_dict=None):
-        # غیرفعال شده - هیچ واکنشی نشان نمی‌دهد
         return 0, "Disabled"
 
     def refresh_token(self, refresh_token, proxy_dict=None):
-        # غیرفعال شده - بازسازی توکن انجام نمی‌‌شود
         return None, None
 
 # ==========================================
@@ -602,7 +597,7 @@ async def start_web_server():
 # ==========================================
 # منوها و دکمه‌ها
 # ==========================================
-def get_main_keyboard(is_admin_user, active_tag_name=None):
+def get_main_keyboard(is_admin_user=True, active_tag_name=None):
     keyboard = [[InlineKeyboardButton("🔑 ورود به حساب", callback_data="user_login")]]
     
     tag_btn_text = f"🏷 تغییر/حذف برچسب (فعال: {active_tag_name})" if active_tag_name else "🏷 تنظیم برچسب نشست (Tag)"
@@ -614,8 +609,6 @@ def get_main_keyboard(is_admin_user, active_tag_name=None):
     ])
     
     keyboard.append([InlineKeyboardButton("🎁 بررسی تخفیف لینک‌ها", callback_data="check_user_links")])
-    
-    keyboard.append([InlineKeyboardButton("📞 تماس با مدیر", callback_data="contact_admin")])
     
     if is_admin_user:
         keyboard.append([InlineKeyboardButton("⚙️ پنل مدیریت", callback_data="admin_panel")])
@@ -755,22 +748,20 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
     return ConversationHandler.END
 
 # ==========================================
-# بررسی تخفیف لینک‌های کاربر (غیرفعال شده)
+# بررسی تخفیف لینک‌های کاربر (دسترسی مستقیم بدون تایید ادمین)
 # ==========================================
 async def ask_user_links_for_discount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # غیرفعال شده - لودینگ متوقف شده و به منوی قبل باز می‌گردد
     await update.callback_query.answer()
-    return ConversationHandler.END
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو عملیات", callback_data="cancel_action")]])
+    text = (
+        "🎁 <b>بررسی تخفیف لینک‌ها</b>\n\n"
+        "لطفاً لینک‌های اکانت‌ها (یا شناسه لینک‌ها) را ارسال کنید.\n"
+        "می‌توانید در هر خط یک لینک بفرستید تا وضعیت تخفیف آن بررسی شود:"
+    )
+    await update.callback_query.edit_message_text(text, reply_markup=kb, parse_mode='HTML')
+    return ASK_LINKS_FOR_DISCOUNT
 
 async def process_user_links_discount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # به دلیل مسدود شدن دکمه در بالا، این بخش اجرا نخواهد شد، اما برای احتیاط نگه داشته شده است.
-    user_id = update.effective_user.id
-    
-    if not await is_user_approved_for_discount(user_id):
-        await update.message.reply_text("❌ دسترسی شما به این بخش لغو شده است.")
-        await show_main_menu(update, context)
-        return ConversationHandler.END
-    
     text = update.message.text.strip()
     
     found_ids = []
@@ -888,9 +879,6 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     
     if data.startswith("approve_discount_"):
-        if user_id != MASTER_ADMIN_ID:
-            await query.answer("❌ شما اجازه این کار را ندارید.", show_alert=True)
-            return
         target_id = data.split("approve_discount_")[1]
         await approve_user_for_discount(target_id)
         await query.edit_message_text(f"✅ دسترسی کاربر <code>{target_id}</code> تایید شد.", parse_mode='HTML')
@@ -901,9 +889,6 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     if data.startswith("deny_discount_"):
-        if user_id != MASTER_ADMIN_ID:
-            await query.answer("❌ شما اجازه این کار را ندارید.", show_alert=True)
-            return
         target_id = data.split("deny_discount_")[1]
         await remove_user_pending_req(target_id)
         await query.edit_message_text(f"❌ درخواست کاربر <code>{target_id}</code> رد شد.", parse_mode='HTML')
@@ -917,17 +902,6 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         context.user_data['admin_state'] = None
         await show_main_menu(update, context)
-        return
-        
-    if data == "contact_admin":
-        await query.answer()
-        await query.edit_message_text(
-            "📞 <b>ارتباط با مدیریت:</b>\n\n"
-            "جهت هرگونه سوال، پیشنهاد یا گزارش مشکل به آیدی زیر پیام دهید:\n"
-            "@navlink_1",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="main_menu")]]),
-            parse_mode='HTML'
-        )
         return
         
     if data == "finish_link_creation":
@@ -1096,7 +1070,6 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 users_data[uid]["links"].append(entry)
             except Exception: pass
 
-        
         report_text = "📊 <b>گزارش جامع تولید لینک:</b>\n\n"
         for uid, udata in users_data.items():
             uname_str = f" (@{udata['username']})" if udata['username'] else ""
@@ -1122,7 +1095,6 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"✅ انقضای لینک‌ها با موفقیت به <b>{exp_str}</b> تغییر یافت.", reply_markup=get_admin_keyboard(), parse_mode='HTML')
 
     elif data == "admin_check_discounts":
-        # غیرفعال شده
         await query.answer()
         return
 
@@ -1132,7 +1104,6 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=user_id, text="🔗 <b>عملیات استخراج لینک:</b>\nلطفاً فایل ZIP مربوطه را ارسال کنید.", parse_mode='HTML')
         
     elif data == "admin_zip_discount":
-        # غیرفعال شده
         await query.answer()
         return
 
@@ -1255,7 +1226,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "admin_clear":
         await query.answer()
         kb = [[InlineKeyboardButton("✅ تایید عملیات حذف", callback_data="admin_clear_confirm"), InlineKeyboardButton("❌ انصراف", callback_data="admin_panel")]]
-        await query.edit_message_text("⚠️️ <b>اخطار:</b> این عملیات تمامی اطلاعات ثبت شده را حذف خواهد کرد.\nآیا تایید می‌کنید؟", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+        await query.edit_message_text("⚠ <b>اخطار:</b> این عملیات تمامی اطلاعات ثبت شده را حذف خواهد کرد.\nآیا تایید می‌کنید؟", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
         
     elif data == "admin_clear_confirm":
         await query.answer()
@@ -1349,7 +1320,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📊 <b>گزارش وضعیت و منشأ حساب‌های سیستم:</b>\n\n"
                 f"👥 <b>ثبت شده توسط سیستم:</b> {user_count} مورد\n"
                 f"🗂 <b>اضافه شده با فایل / پشتیبان:</b> {zip_count} مورد\n"
-                f"⚠️ <b>فاقد لینک (منقضی یا ناقص):</b> {orphan_count} مورد\n"
+                f"⚠️️ <b>فاقد لینک (منقضی یا ناقص):</b> {orphan_count} مورد\n"
                 f"──────────────\n"
                 f"🔢 <b>کل حساب‌های سیستم:</b> {len(acc_keys)} مورد"
             )
@@ -1428,7 +1399,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                         await redis_client.rpush("global_link_logs", json.dumps(log_entry, ensure_ascii=False))
                         
-                        status_str = "♻️ احیا شده (همان لینک قبلی)" if old_id else "🆕 لینک کاملاً جدید"
+                        status_str = "♻️️ احیا شده (همان لینک قبلی)" if old_id else "🆕 لینک کاملاً جدید"
                         links_text += f"📱 شماره: {phone}\n🔗 لینک: {final_url} ➔ {status_str}\n\n"
                         generated_count += 1
             
@@ -1851,7 +1822,7 @@ async def main():
     )
     application.add_handler(conv_handler)
     
-    application.add_handler(CallbackQueryHandler(core_callback, pattern="^admin_|^set_exp_|^main_menu$|^admin_panel$\vert{}^finish_link_creation$|^my_tags$\vert{}^show_tag_\vert{}^contact_admin$|^approve_discount_|^deny_discount_"))
+    application.add_handler(CallbackQueryHandler(core_callback, pattern="^admin_|^set_exp_|^main_menu$\vert{}^admin_panel$|^finish_link_creation$\vert{}^my_tags$|^show_tag_|^approve_discount_|^deny_discount_"))
     
     application.add_handler(MessageHandler(filters.TEXT | filters.Document.FileExtension("txt"), handle_admin_text_document))
 
