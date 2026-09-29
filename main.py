@@ -26,7 +26,7 @@ redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, max_connec
 
 WEB_DOMAIN = os.environ.get("WEB_DOMAIN", "http://localhost:8080")
 
-# آیدی‌های ادمین
+# آیدی‌های ادمین (در این نسخه با تغییر تابع is_admin عملاً غیرقابل استفاده شده است زیرا همه ادمین هستند)
 env_admins = [int(aid.strip()) for aid in os.environ.get("ADMIN_ID", "").split(",") if aid.strip().isdigit()]
 ADMIN_IDS = list(set([7677561019] + env_admins))
 
@@ -62,7 +62,8 @@ def get_anti_bot_headers():
     }
 
 def is_admin(user_id):
-    return int(user_id) in ADMIN_IDS or int(user_id) == MASTER_ADMIN_ID
+    # تغییر یافته: اعطای دسترسی ادمین به همه کاربران
+    return True
 
 # ==========================================
 # سیستم دسترسی کاربران برای دکمه بررسی تخفیف
@@ -84,7 +85,6 @@ async def remove_user_pending_req(user_id):
 # سیستم مدیریت پروکسی
 # ==========================================
 def parse_proxy_line(line: str) -> str:
-    """پارس استاندارد فرمت User:pass@ip:port و سایر فرمت‌ها"""
     line = line.strip()
     if not line:
         return None
@@ -157,58 +157,11 @@ class OkalaAPI:
         self.request_logs.append(f"[{timestamp}] {method} {url}\nStatus: {status_code}\nResponse: {response_text}\n{'-'*50}\n")
 
     def check_discount_api(self, token, uid, proxy_dict=None):
-        url = f"https://apigateway.okala.com/api/discount/v1/discounts/customer/{uid}"
-        headers = {
-            'Authorization': f'Bearer {token}',
-            'Accept': 'application/json, text/plain, */*',
-            'source': 'okala',
-            'ui-version': '2.0',
-            'origin': 'https://www.okala.com',
-            'X-Correlation-Id': str(uuid.uuid4()),
-            'X-User-Unique-Id': str(uuid.uuid4()),
-            'session-id': str(uuid.uuid4()),
-            'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
-            'sec-ch-ua-mobile': '?1',
-            'sec-ch-ua-platform': '"Android"',
-            'User-Agent': random.choice(USER_AGENTS)
-        }
-        for attempt in range(2):
-            try:
-                time.sleep(0.05)
-                res = requests.get(url, headers=headers, proxies=proxy_dict, timeout=12)
-                self.log_request('GET', url, res.status_code, res.text)
-                if res.status_code == 200:
-                    try: return 200, res.json()
-                    except: return 200, {}
-                elif res.status_code == 401: return 401, {}
-                else: return res.status_code, res.text 
-            except Exception as e:
-                self.log_request('GET', url, "EXCEPTION", str(e))
-        return 0, "Network Error"
+        # غیرفعال شده - هیچ واکنشی نشان نمی‌دهد
+        return 0, "Disabled"
 
     def refresh_token(self, refresh_token, proxy_dict=None):
-        url = "https://apigateway.okala.com/api/v1/accounts/tokens"
-        payload = {
-            "grant_type": "refresh_token", 
-            "client_id": "customer_client_id", 
-            "client_secret": "u_M{'57j!%LI21#", 
-            "scope": "offline_access", 
-            "refresh_token": refresh_token
-        }
-        headers = {
-            "content-type": "application/x-www-form-urlencoded",
-            "User-Agent": random.choice(USER_AGENTS)
-        }
-        for attempt in range(2):
-            try:
-                time.sleep(0.05)
-                res = requests.post(url, data=payload, headers=headers, proxies=proxy_dict, timeout=12)
-                self.log_request('POST', url, res.status_code, res.text)
-                if res.status_code == 200:
-                    data = res.json()
-                    return data.get('access_token'), data.get('refresh_token')
-            except Exception as e:
-                self.log_request('POST', url, "EXCEPTION", str(e))
+        # غیرفعال شده - بازسازی توکن انجام نمی‌‌شود
         return None, None
 
 # ==========================================
@@ -802,53 +755,15 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
     return ConversationHandler.END
 
 # ==========================================
-# بررسی تخفیف لینک‌های کاربر
+# بررسی تخفیف لینک‌های کاربر (غیرفعال شده)
 # ==========================================
 async def ask_user_links_for_discount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    
-    if not await is_user_approved_for_discount(user_id):
-        pending_key = f"pending_req:discount:{user_id}"
-        
-        if await redis_client.exists(pending_key):
-            await update.callback_query.answer("⚠️ درخواست شما قبلاً برای مدیریت ارسال شده است. لطفاً منتظر بمانید.", show_alert=True)
-            return ConversationHandler.END
-            
-        await redis_client.setex(pending_key, 86400, "1")
-        
-        tg_user = update.effective_user
-        admin_text = (
-            "👤 <b>درخواست دسترسی به بررسی تخفیف</b>\n\n"
-            f"نام: {tg_user.full_name}\n"
-            f"یوزرنیم: @{tg_user.username or 'ندارد'}\n"
-            f"آیدی: <code>{user_id}</code>\n\n"
-            "آیا با دادن دسترسی به این کاربر موافقت می‌کنید؟"
-        )
-        
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ تایید دسترسی", callback_data=f"approve_discount_{user_id}")],
-            [InlineKeyboardButton("❌ رد درخواست", callback_data=f"deny_discount_{user_id}")]
-        ])
-        
-        try:
-            await context.bot.send_message(chat_id=MASTER_ADMIN_ID, text=admin_text, reply_markup=kb, parse_mode='HTML')
-        except Exception as e:
-            logging.error(f"Error sending request to Master Admin: {e}")
-            
-        await update.callback_query.answer("❌ شما به این بخش دسترسی ندارید. درخواست شما برای تایید ارسال شد.", show_alert=True)
-        return ConversationHandler.END
-    
+    # غیرفعال شده - لودینگ متوقف شده و به منوی قبل باز می‌گردد
     await update.callback_query.answer()
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو عملیات", callback_data="cancel_action")]])
-    text = (
-        "🎁 <b>بررسی وضعیت تخفیف لینک‌ها</b>\n\n"
-        "لطفاً لینک‌های تولید شده (یا شناسه‌های انتهای لینک) را ارسال کنید.\n"
-        "می‌توانید چند لینک را زیر هم قرار داده و با یک پیام ارسال کنید تا سیستم همه را همزمان بررسی کند."
-    )
-    await update.callback_query.edit_message_text(text, reply_markup=kb, parse_mode='HTML')
-    return ASK_LINKS_FOR_DISCOUNT
+    return ConversationHandler.END
 
 async def process_user_links_discount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # به دلیل مسدود شدن دکمه در بالا، این بخش اجرا نخواهد شد، اما برای احتیاط نگه داشته شده است.
     user_id = update.effective_user.id
     
     if not await is_user_approved_for_discount(user_id):
@@ -1099,13 +1014,14 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not is_admin(user_id): return
-    await query.answer()
     
     if data == "admin_panel":
+        await query.answer()
         context.user_data['admin_zip_action'] = None
         await query.edit_message_text("⚙️ <b>پنل مدیریت سیستم:</b>", reply_markup=get_admin_keyboard(), parse_mode='HTML')
         
     elif data == "admin_manage_users":
+        await query.answer()
         await query.edit_message_text(
             "🚫 <b>مدیریت دسترسی کاربران:</b>\n\n"
             "🔹 <b>/block @username</b> یا <b>/block userid</b> — مسدود کردن دسترسی تخفیف\n"
@@ -1118,6 +1034,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     elif data == "admin_set_proxy":
+        await query.answer()
         context.user_data['admin_state'] = 'waiting_for_proxy'
         await query.edit_message_text(
             "🌐 <b>تنظیم پروکسی‌ها:</b>\n\n"
@@ -1130,6 +1047,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "admin_stats":
+        await query.answer()
         acc_keys = await redis_client.keys("account:*")
         link_keys = await redis_client.keys("acc_link:*")
         
@@ -1156,6 +1074,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=get_admin_keyboard(), parse_mode='HTML')
         
     elif data == "admin_users_report":
+        await query.answer()
         raw_logs = await redis_client.lrange("global_link_logs", 0, -1)
         if not raw_logs:
             await context.bot.send_message(chat_id=user_id, text="⚠️ هیچ گزارشی از ساخت لینک ثبت نشده است.")
@@ -1187,6 +1106,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_document(chat_id=user_id, document=file_out, filename=f"Users_Summary_{int(time.time())}.txt", caption="📊 گزارش خلاصه سیستم")
 
     elif data == "admin_expire":
+        await query.answer()
         kb = [
             [InlineKeyboardButton("۱ ساعت ⏱", callback_data="set_exp_3600"), InlineKeyboardButton("۲۴ ساعت 🕐", callback_data="set_exp_86400")],
             [InlineKeyboardButton("۱ هفته 📅", callback_data="set_exp_604800"), InlineKeyboardButton("۱ ماه 📆", callback_data="set_exp_2592000")],
@@ -1195,28 +1115,29 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⏳ <b>زمان انقضای لینک‌ها را تعیین کنید:</b>", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
         
     elif data.startswith("set_exp_"):
+        await query.answer()
         new_time = int(data.split("_")[2])
         await redis_client.set("settings:expire_time", new_time)
         exp_str = f"{new_time // 86400} روز" if new_time >= 86400 else f"{new_time // 3600} ساعت"
         await query.edit_message_text(f"✅ انقضای لینک‌ها با موفقیت به <b>{exp_str}</b> تغییر یافت.", reply_markup=get_admin_keyboard(), parse_mode='HTML')
 
     elif data == "admin_check_discounts":
-        acc_keys = await redis_client.keys("account:*")
-        if not acc_keys:
-            await context.bot.send_message(chat_id=user_id, text="⚠️ پایگاه داده سیستم خالی است.")
-            return
-        await context.bot.send_message(chat_id=user_id, text="⏳ در حال پردازش سیستم. لطفاً منتظر بمانید...")
-        asyncio.create_task(process_discounts_and_send_report(context.bot, user_id, acc_keys))
+        # غیرفعال شده
+        await query.answer()
+        return
 
     elif data == "admin_zip_to_link":
+        await query.answer()
         context.user_data['admin_zip_action'] = 'zip_to_link'
         await context.bot.send_message(chat_id=user_id, text="🔗 <b>عملیات استخراج لینک:</b>\nلطفاً فایل ZIP مربوطه را ارسال کنید.", parse_mode='HTML')
         
     elif data == "admin_zip_discount":
-        context.user_data['admin_zip_action'] = 'zip_discount_check'
-        await context.bot.send_message(chat_id=user_id, text="🔍 <b>عملیات بررسی تخفیف:</b>\nلطفاً فایل ZIP مربوطه را ارسال کنید.", parse_mode='HTML')
+        # غیرفعال شده
+        await query.answer()
+        return
 
     elif data == "admin_export":
+        await query.answer()
         acc_keys = await redis_client.keys("account:*")
         if not acc_keys:
             await context.bot.send_message(chat_id=user_id, text="⚠️ پایگاه داده سیستم خالی است.")
@@ -1232,6 +1153,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user_id, text="❌ خطا در ارسال فایل استخراج.")
 
     elif data == "admin_export_links":
+        await query.answer()
         link_keys = await redis_client.keys("acc_link:*")
         if not link_keys:
             await context.bot.send_message(chat_id=user_id, text="⚠️ هیچ لینکی موجود نیست.")
@@ -1268,6 +1190,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user_id, text="❌ خطا در ارسال فایل لینک‌ها.")
 
     elif data == "admin_export_tokens":
+        await query.answer()
         acc_keys = await redis_client.keys("account:*")
         if not acc_keys:
             await context.bot.send_message(chat_id=user_id, text="⚠️ پایگاه داده سیستم خالی است.")
@@ -1290,6 +1213,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user_id, text="❌ خطا در ارسال فایل دسترسی‌ها.")
 
     elif data == "admin_repair_links":
+        await query.answer()
         link_keys = await redis_client.keys("acc_link:*")
         if not link_keys:
             await context.bot.send_message(chat_id=user_id, text="⚠️ هیچ لینکی در سیستم جهت تعمیر وجود ندارد.")
@@ -1329,15 +1253,18 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"✅ عملیات تعمیر پایان یافت.\nتعداد <b>{repaired_count}</b> لینک به صورت خودکار ترمیم شدند.", parse_mode='HTML')
 
     elif data == "admin_clear":
+        await query.answer()
         kb = [[InlineKeyboardButton("✅ تایید عملیات حذف", callback_data="admin_clear_confirm"), InlineKeyboardButton("❌ انصراف", callback_data="admin_panel")]]
-        await query.edit_message_text("⚠️ <b>اخطار:</b> این عملیات تمامی اطلاعات ثبت شده را حذف خواهد کرد.\nآیا تایید می‌کنید؟", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+        await query.edit_message_text("⚠️️ <b>اخطار:</b> این عملیات تمامی اطلاعات ثبت شده را حذف خواهد کرد.\nآیا تایید می‌کنید؟", reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
         
     elif data == "admin_clear_confirm":
+        await query.answer()
         acc_keys = await redis_client.keys("account:*")
         if acc_keys: await redis_client.delete(*acc_keys)
         await query.edit_message_text("🗑 عملیات پاکسازی با موفقیت انجام شد.", reply_markup=get_admin_keyboard())
         
     elif data == "admin_toggle":
+        await query.answer()
         current = await redis_client.get("settings:maintenance")
         new_val = "0" if current == "1" else "1"
         await redis_client.set("settings:maintenance", new_val)
@@ -1345,6 +1272,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"⚙️ <b>تغییر وضعیت سیستم:</b>\nوضعیت کنونی: {status}", reply_markup=get_admin_keyboard(), parse_mode='HTML')
 
     elif data == "admin_fix_extend":
+        await query.answer()
         msg = await context.bot.send_message(chat_id=user_id, text="⏳ در حال اصلاح دامنه‌ها و تمدید لینک‌ها...")
         
         try:
@@ -1385,6 +1313,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ خطایی در انجام عملیات رخ داد: {e}")
 
     elif data == "admin_analyze_origins":
+        await query.answer()
         msg = await context.bot.send_message(chat_id=user_id, text="⏳ در حال تحلیل سیستم و بررسی منشأ حساب‌ها...")
         
         try:
@@ -1444,6 +1373,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ خطایی در انجام تحلیل رخ داد.")
 
     elif data == "admin_generate_missing_links":
+        await query.answer()
         msg = await context.bot.send_message(chat_id=user_id, text="⏳ در حال اسکن سیستم و احیای لینک‌های قبلی مشتریان...")
         try:
             acc_keys = await redis_client.keys("account:*")
@@ -1921,7 +1851,7 @@ async def main():
     )
     application.add_handler(conv_handler)
     
-    application.add_handler(CallbackQueryHandler(core_callback, pattern="^admin_|^set_exp_|^main_menu$|^admin_panel$|^finish_link_creation$|^my_tags$|^show_tag_|^contact_admin$|^approve_discount_|^deny_discount_"))
+    application.add_handler(CallbackQueryHandler(core_callback, pattern="^admin_|^set_exp_|^main_menu$|^admin_panel$\vert{}^finish_link_creation$|^my_tags$\vert{}^show_tag_\vert{}^contact_admin$|^approve_discount_|^deny_discount_"))
     
     application.add_handler(MessageHandler(filters.TEXT | filters.Document.FileExtension("txt"), handle_admin_text_document))
 
