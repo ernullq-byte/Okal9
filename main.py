@@ -37,7 +37,7 @@ DEFAULT_PROXY_API = "https://erlink.s3.ir-thr-at1.arvanstorage.ir/%DB%B6%20%288%
 
 PHONE, OTP, ASK_NAME, ASK_TAG, ASK_SEARCH, ASK_LINKS_FOR_DISCOUNT = range(6)
 
-executor = ThreadPoolExecutor(max_workers=30)
+executor = ThreadPoolExecutor(max_workers=1)
 
 # لیست User-Agent های واقعی موبایل
 USER_AGENTS = [
@@ -61,14 +61,14 @@ def get_anti_bot_headers():
     }
 
 def is_admin(user_id):
-    # دسترسی ادمین و پنل مدیریت برای همه کاربران فعال است
+    # دسترسی همگانی به پنل مدیریت
     return True
 
 # ==========================================
 # سیستم دسترسی کاربران برای دکمه بررسی تخفیف
 # ==========================================
 async def is_user_approved_for_discount(user_id):
-    # دسترسی آزاد برای تمامی افراد بدون نیاز به تایید
+    # دسترسی آزاد برای تمامی افراد بدون نیاز به تایید ادمین
     return True
 
 async def approve_user_for_discount(user_id):
@@ -145,6 +145,41 @@ def update_tokens_in_data(data, old_acc, new_acc, old_ref, new_ref):
     except Exception:
         return data
 
+def update_link_json_tokens(data_json, new_acc, new_ref):
+    """به‌روزرسانی کوکی‌ها و حافظه محلی ذخیره‌شده بدون تغییر در ساختار لینک"""
+    try:
+        if "cookies" not in data_json or not isinstance(data_json["cookies"], list):
+            data_json["cookies"] = []
+        
+        data_json["cookies"] = [c for c in data_json["cookies"] if c.get("name") not in ["tokenMS", "token", "refresh_token"]]
+        data_json["cookies"].append({"name": "tokenMS", "value": new_acc, "domain": ".okala.com", "path": "/", "secure": True, "sameSite": "None"})
+        data_json["cookies"].append({"name": "token", "value": new_acc, "domain": ".okala.com", "path": "/", "secure": True, "sameSite": "None"})
+        if new_ref:
+            data_json["cookies"].append({"name": "refresh_token", "value": new_ref, "domain": ".okala.com", "path": "/", "secure": True, "sameSite": "None"})
+            
+        origins = data_json.get("origins", [])
+        if origins and isinstance(origins, list):
+            ls = origins[0].get("localStorage", [])
+            for item in ls:
+                if item.get("name") == "tokenMS":
+                    item["value"] = new_acc
+                elif item.get("name") == "refresh_token" and new_ref:
+                    item["value"] = new_ref
+                elif item.get("name") == "persist:root":
+                    try:
+                        proot = json.loads(item.get("value", "{}"))
+                        if "user" in proot:
+                            u_val = json.loads(proot["user"])
+                            if "user" in u_val and isinstance(u_val["user"], dict):
+                                u_val["user"]["token"] = new_acc
+                                proot["user"] = json.dumps(u_val, ensure_ascii=False)
+                                item["value"] = json.dumps(proot, ensure_ascii=False)
+                    except Exception:
+                        pass
+    except Exception as e:
+        logging.error(f"Error updating link json tokens: {e}")
+    return data_json
+
 class OkalaAPI:
     def __init__(self):
         self.request_logs = []
@@ -156,7 +191,31 @@ class OkalaAPI:
     def check_discount_api(self, token, uid, proxy_dict=None):
         return 0, "Disabled"
 
-    def refresh_token(self, refresh_token, proxy_dict=None):
+    def refresh_token(self, refresh_token_val, proxy_dict=None):
+        """بازسازی و تمدید خودکار توکن از طریق رفرش توکن"""
+        url = "https://apigateway.okala.com/api/v1/accounts/tokens"
+        headers = get_anti_bot_headers()
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        payload = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token_val,
+            "client_id": "customer_client_id",
+            "client_secret": "u_M{'57j!%LI21#",
+            "client_name": "customer_client_name",
+            "device_type_code": 7,
+            "scope": "offline_access"
+        }
+        try:
+            res = requests.post(url, data=payload, headers=headers, proxies=proxy_dict, timeout=12)
+            self.log_request("POST", url, res.status_code, res.text[:300] if res.text else "")
+            if res.status_code == 200:
+                data = res.json()
+                new_acc = data.get("access_token")
+                new_ref = data.get("refresh_token")
+                if new_acc:
+                    return new_acc, new_ref
+        except Exception as e:
+            logging.error(f"Error during token refresh: {e}")
         return None, None
 
 # ==========================================
@@ -568,7 +627,7 @@ async def handle_zip_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 links_out = io.BytesIO(links_text.encode('utf-8'))
                 await context.bot.send_document(chat_id=user_id, document=links_out, filename=f"Discount_Report_{ts}.txt", caption="✅ گزارش لینک‌های دارای تخفیف")
             else:
-                report_out = io.BytesIO("هیچ‌یک از حساب‌های موجود دارای تخفیف نبودند.".encode('utf-8'))
+                report_out = io.BytesIO("هیچ‌‌یک از حساب‌های موجود دارای تخفیف نبودند.".encode('utf-8'))
                 await context.bot.send_document(chat_id=user_id, document=report_out, filename=f"Discount_Report_{ts}.txt", caption="⚠️ گزارش تخفیف‌ها (تخفیفی یافت نشد)")
                 
             if debug_logs:
@@ -1190,38 +1249,102 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user_id, text="⚠️ هیچ لینکی در سیستم جهت تعمیر وجود ندارد.")
             return
             
-        msg = await context.bot.send_message(chat_id=user_id, text="🛠 در حال بررسی و تعمیر لینک‌ها...")
+        msg = await context.bot.send_message(
+            chat_id=user_id, 
+            text=f"🛠 در حال بازسازی توکن‌ها با رفرش‌توکن و تمدید اعتبار <b>{len(link_keys)}</b> لینک...", 
+            parse_mode='HTML'
+        )
+        
+        await fetch_and_update_proxies_from_api()
+        expire_time = await redis_client.get("settings:expire_time")
+        expire_time = int(expire_time) if expire_time else 2592000  # ۳۰ روز به طور پیش‌فرض
+        
+        api = OkalaAPI()
+        loop = asyncio.get_running_loop()
         repaired_count = 0
-        for l_key in link_keys:
-            try:
-                link_data = await redis_client.get(l_key)
-                data_json = json.loads(link_data)
-                phone = None
-                origins = data_json.get("origins", [])
-                if origins:
-                    for item in origins[0].get("localStorage", []):
-                        if item.get("name") == "user":
-                            user_obj = json.loads(urllib.parse.unquote(item.get("value")))
-                            phone = user_obj.get("mobilePhone")
-                            break
-                if phone:
-                    acc_data = await redis_client.hgetall(f"account:{phone}")
-                    r_tok = acc_data.get("refresh_token")
-                    t_ms = acc_data.get("access_token")
-                    if r_tok and t_ms:
-                        if "cookies" not in data_json:
-                            data_json["cookies"] = []
-                        data_json["cookies"] = [c for c in data_json["cookies"] if c.get("name") not in ["tokenMS", "token", "refresh_token"]]
-                        data_json["cookies"].append({"name": "tokenMS", "value": t_ms, "domain": ".okala.com", "path": "/", "secure": True, "sameSite": "None"})
-                        data_json["cookies"].append({"name": "token", "value": t_ms, "domain": ".okala.com", "path": "/", "secure": True, "sameSite": "None"})
-                        data_json["cookies"].append({"name": "refresh_token", "value": r_tok, "domain": ".okala.com", "path": "/", "secure": True, "sameSite": "None"})
-                        ttl = await redis_client.ttl(l_key)
-                        if ttl > 0:
-                            await redis_client.setex(l_key, ttl, json.dumps(data_json, ensure_ascii=False))
-                            repaired_count += 1
-            except Exception as e:
-                logging.error(f"Error repairing link {l_key}: {e}")
-        await msg.edit_text(f"✅ عملیات تعمیر پایان یافت.\nتعداد <b>{repaired_count}</b> لینک به صورت خودکار ترمیم شدند.", parse_mode='HTML')
+        refreshed_count = 0
+        failed_count = 0
+        sem = asyncio.Semaphore(10)
+        
+        async def _repair_single_link(l_key):
+            nonlocal repaired_count, refreshed_count, failed_count
+            async with sem:
+                try:
+                    link_data = await redis_client.get(l_key)
+                    if not link_data:
+                        return
+                    data_json = json.loads(link_data)
+                    phone = None
+                    origins = data_json.get("origins", [])
+                    if origins:
+                        for item in origins[0].get("localStorage", []):
+                            if item.get("name") == "user":
+                                try:
+                                    user_obj = json.loads(urllib.parse.unquote(item.get("value")))
+                                    phone = user_obj.get("mobilePhone")
+                                except: pass
+                                break
+                    
+                    ref_token = None
+                    acc_token = None
+                    if phone:
+                        acc_data = await redis_client.hgetall(f"account:{phone}")
+                        ref_token = acc_data.get("refresh_token")
+                        acc_token = acc_data.get("access_token")
+                    
+                    if not ref_token:
+                        for cookie in data_json.get("cookies", []):
+                            if cookie.get("name") == "refresh_token":
+                                ref_token = cookie.get("value")
+                                break
+                    
+                    proxy_dict = await get_random_proxy_from_db()
+                    new_acc, new_ref = None, None
+                    
+                    # استعلام توکن تازه از اکالا
+                    if ref_token:
+                        new_acc, new_ref = await loop.run_in_executor(
+                            executor, api.refresh_token, ref_token, proxy_dict
+                        )
+                    
+                    if new_acc:
+                        refreshed_count += 1
+                        final_acc = new_acc
+                        final_ref = new_ref or ref_token
+                        if phone:
+                            await redis_client.hset(f"account:{phone}", mapping={"access_token": final_acc, "refresh_token": final_ref})
+                    else:
+                        final_acc = acc_token
+                        final_ref = ref_token
+                    
+                    if final_acc:
+                        # تمدید اعتبار و بازسازی بدون تغییر آدرس لینک قبلی
+                        data_json = update_link_json_tokens(data_json, final_acc, final_ref)
+                        await redis_client.setex(l_key, expire_time, json.dumps(data_json, ensure_ascii=False))
+                        if phone:
+                            link_id = l_key.replace("acc_link:", "")
+                            final_url = f"{WEB_DOMAIN}/acc/{link_id}"
+                            await redis_client.setex(f"phone_active_link:{phone}", expire_time, final_url)
+                        repaired_count += 1
+                    else:
+                        failed_count += 1
+                except Exception as e:
+                    logging.error(f"Error repairing {l_key}: {e}")
+                    failed_count += 1
+
+        await asyncio.gather(*[_repair_single_link(k) for k in link_keys])
+        
+        report = (
+            f"✅ <b>عملیات تعمیر و تمدید لینک‌ها پایان یافت!</b>\n\n"
+            f"🔗 کل لینک‌های پردازش شده: <b>{len(link_keys)}</b>\n"
+            f"🔄 توکن‌های با موفقیت بازسازی شده: <b>{refreshed_count}</b>\n"
+            f"🛠 لینک‌های تثبیت و تمدید شده: <b>{repaired_count}</b>\n"
+            f"⏳ مدت اعتبار جدید لینک‌ها: <b>{expire_time // 86400} روز</b>\n"
+        )
+        if failed_count > 0:
+            report += f"⚠️ بدون توکن یا خطا: <b>{failed_count}</b>"
+            
+        await msg.edit_text(report, parse_mode='HTML')
 
     elif data == "admin_clear":
         await query.answer()
@@ -1320,7 +1443,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📊 <b>گزارش وضعیت و منشأ حساب‌های سیستم:</b>\n\n"
                 f"👥 <b>ثبت شده توسط سیستم:</b> {user_count} مورد\n"
                 f"🗂 <b>اضافه شده با فایل / پشتیبان:</b> {zip_count} مورد\n"
-                f"⚠️️ <b>فاقد لینک (منقضی یا ناقص):</b> {orphan_count} مورد\n"
+                f"⚠️ <b>فاقد لینک (منقضی یا ناقص):</b> {orphan_count} مورد\n"
                 f"──────────────\n"
                 f"🔢 <b>کل حساب‌های سیستم:</b> {len(acc_keys)} مورد"
             )
@@ -1399,7 +1522,7 @@ async def core_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                         await redis_client.rpush("global_link_logs", json.dumps(log_entry, ensure_ascii=False))
                         
-                        status_str = "♻️️ احیا شده (همان لینک قبلی)" if old_id else "🆕 لینک کاملاً جدید"
+                        status_str = "♻️ احیا شده (همان لینک قبلی)" if old_id else "🆕 لینک کاملاً جدید"
                         links_text += f"📱 شماره: {phone}\n🔗 لینک: {final_url} ➔ {status_str}\n\n"
                         generated_count += 1
             
